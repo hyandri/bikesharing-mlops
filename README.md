@@ -63,26 +63,13 @@ airflow-docker/
 - **Analytics:** ClickHouse (via clickhouse-connect)
 - **Notebooks:** Jupyter for exploration
 
-## 📊 Available DAGs
+## 📊 Main DAGs
 
 ### 1. **Bike Sharing Pipeline** (`bike_sharing_pipeline.py`)
 - Ingests bike sharing hourly data
 - Transforms to star schema
 - Data validation with Great Expectations
 - Loads to MariaDB
-
-### 2. **Iris ML Pipeline** (`iris_ml_pipeline.py`)
-- Machine learning workflow on Iris dataset
-- Feature engineering and model training
-- Results storage and evaluation
-
-### 3. **Iris Redis Pipeline** (`iris_redis_pipeline.py`)
-- Iris data processing with Redis caching
-- Optimized for high-frequency access
-
-### 4. **Wine Ingestion DAG** (`wine_ingestion_dag.py`)
-- Wine dataset ingestion and transformation
-- Schema validation and quality checks
 
 ## 🔧 Configuration
 
@@ -159,7 +146,6 @@ jupyter notebook dags/Untitled.ipynb
 
 ## 🔒 Security Notes
 
-⚠️ **WARNING:** This configuration is for **local development only**. Do NOT use in production.
 
 Before deploying to production:
 - Change default passwords in `.env`
