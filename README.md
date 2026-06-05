@@ -13,7 +13,7 @@ A Docker-based Apache Airflow project for orchestrating ETL pipelines with machi
 
 1. **Clone and navigate to the project:**
    ```bash
-   git clone <your-repo-url>
+   git clone https://github.com/hyandri/bikesharing-mlops.git
    cd airflow-docker
    ```
 
