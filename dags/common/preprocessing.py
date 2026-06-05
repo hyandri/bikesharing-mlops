@@ -48,21 +48,10 @@ def extract_from_star_schema():
 # ─────────────────────────────────────────
 def engineer_features(df):
     """
-    Applies all feature engineering steps:
-    - Cyclical encoding for hr, mnth, weekday
-    - Rush hour flags
-    - Interaction features
-    - Weekend flag
-    - Peak season flag
-    - One-hot encoding for season
-    Drops raw columns after encoding.
+    Feature engineering for XGBoost.
+    Tree-based models work better with raw integers
+    than cyclical encodings.
     """
-
-    # Cyclical encoding
-    for col, period in [('hr', 24), ('mnth', 12), ('weekday', 7)]:
-        df[f'{col}_sin'] = np.sin(2 * np.pi * df[col] / period)
-        df[f'{col}_cos'] = np.cos(2 * np.pi * df[col] / period)
-
     # Rush hour flags
     df['is_morning_rush'] = df['hr'].between(7, 9).astype(int)
     df['is_evening_rush'] = df['hr'].between(16, 19).astype(int)
@@ -77,16 +66,9 @@ def engineer_features(df):
     df['temp_hum_interaction']  = df['temp'] * (1 - df['hum'])
     df['temp_wind_interaction'] = df['temp'] * (1 - df['windspeed'])
 
-    # One-hot encode season (drop_first to avoid multicollinearity)
-    df = pd.get_dummies(
-        df,
-        columns=['season_original'],
-        prefix='season',
-        drop_first=True
-    )
-
-    # Drop raw cyclic columns now that encoded versions exist
-    df.drop(columns=['hr', 'mnth', 'weekday'], inplace=True)
+    # Keep hr, mnth, weekday, season_original as raw integers
+    # XGBoost handles these better than sin/cos transforms
+    # No one-hot encoding needed for tree models
 
     return df
 
@@ -107,7 +89,7 @@ def temporal_split(df):
     test  = df[df['dteday'] >  '2012-08-07'].copy()
 
     for split in [train, test]:
-        split.drop(columns=['dteday', 'yr'], inplace=True)
+        split.drop(columns=['dteday'], inplace=True)
 
     TARGET   = 'cnt'
     FEATURES = [c for c in train.columns if c != TARGET]

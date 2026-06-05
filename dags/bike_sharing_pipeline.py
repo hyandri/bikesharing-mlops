@@ -26,6 +26,11 @@ from preprocessing import (
     load_split_from_redis,
 )
 
+from training import (
+    train_xgboost,
+    register_best_model,
+)
+
 # ─────────────────────────────────────────
 # CONSTANTS
 # ─────────────────────────────────────────
@@ -75,6 +80,7 @@ def task_load_to_olap(ti):
         star_schema
     )
 
+
 # ─────────────────────────────────────────
 # PREPROCESSING TASKS
 # ─────────────────────────────────────────
@@ -107,6 +113,37 @@ def task_extract():
 
     return key
 
+def task_debug_data(ti):
+    from preprocessing import load_split_from_redis
+    
+    keys = ti.xcom_pull(task_ids='engineer_and_split')
+    
+    X_train = load_split_from_redis(keys['X_train'])
+    y_train = load_split_from_redis(keys['y_train'])
+    X_test  = load_split_from_redis(keys['X_test'])
+    y_test  = load_split_from_redis(keys['y_test'])
+    
+    print("=== SHAPES ===")
+    print(f"X_train: {X_train.shape}")
+    print(f"y_train: {y_train.shape}")
+    print(f"X_test:  {X_test.shape}")
+    print(f"y_test:  {y_test.shape}")
+    
+    print("\n=== X_train COLUMNS ===")
+    print(list(X_train.columns))
+    
+    print("\n=== y_train SAMPLE ===")
+    print(y_train.head(10))
+    
+    print("\n=== y_train STATS ===")
+    print(y_train.describe())
+    
+    print("\n=== X_train SAMPLE ===")
+    print(X_train.head(5).to_string())
+    
+    print("\n=== X_train NULL CHECK ===")
+    print(X_train.isnull().sum())
+
 
 def task_engineer_and_split(ti):
     """
@@ -134,40 +171,49 @@ def task_engineer_and_split(ti):
 
 
 def task_verify_redis_splits(ti):
-    """
-    Loads each split from Redis
-    and logs row and column counts.
-    Confirms all splits are correctly
-    stored before training.
-    """
-
     keys = ti.xcom_pull(task_ids='engineer_and_split')
 
     if not keys:
-        raise ValueError(
-            "No Redis keys received from upstream task."
-        )
-
-    summary = {}
+        raise ValueError("No Redis keys received from upstream task.")
 
     for name, key in keys.items():
-
         df = load_split_from_redis(key)
+        print(f"{name}: {len(df)} rows, {len(df.columns)} cols — key: {key}")
 
-        summary[name] = {
-            'key': key,
-            'rows': len(df),
-            'cols': len(df.columns)
-        }
+    return keys
 
-        print(
-            f"{name}: "
-            f"{len(df)} rows, "
-            f"{len(df.columns)} cols "
-            f"— key: {key}"
-        )
 
-    return summary
+# ─────────────────────────────────────────
+# TRAINING TASKS
+# ─────────────────────────────────────────
+
+def task_train_xgboost(ti):
+    """
+    Loads splits from Redis, trains XGBoost,
+    logs to MLflow. Returns run ID.
+    """
+    redis_keys = ti.xcom_pull(task_ids='verify_redis_splits')
+
+    if not redis_keys:
+        raise ValueError("No Redis keys received from verify_redis_splits.")
+
+    run_id = train_xgboost(redis_keys)
+
+    return run_id
+
+
+def task_register_model(ti):
+    """
+    Registers the trained model in MLflow
+    and stores run ID in Redis.
+    """
+    run_id = ti.xcom_pull(task_ids='train_xgboost')
+
+    if not run_id:
+        raise ValueError("No run ID received from train_xgboost.")
+
+    return register_best_model(run_id)
+
 
 # ─────────────────────────────────────────
 # DAG DEFINITION
@@ -227,13 +273,27 @@ with DAG(
         python_callable=task_verify_redis_splits,
     )
 
+    # TRAINING TASKS
+
+    train_xgboost_task = PythonOperator(
+        task_id='train_xgboost',
+        python_callable=task_train_xgboost,
+    )
+
+    register_model_task = PythonOperator(
+        task_id='register_model',
+        python_callable=task_register_model,
+    )
+
     # PIPELINE FLOW
 
-    (
-        validate_task
-        >> extract_transform_task
-        >> load_olap_task
-        >> extract_task
-        >> engineer_split_task
-        >> verify_task
+(
+validate_task
+>> extract_transform_task
+>> load_olap_task
+>> extract_task
+>> engineer_split_task
+>> verify_task
+>> train_xgboost_task
+>> register_model_task
     )
