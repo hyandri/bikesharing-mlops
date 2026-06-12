@@ -78,6 +78,7 @@ x-airflow-common:
     - ${AIRFLOW_PROJ_DIR:-.}/config:/opt/airflow/config
     - ${AIRFLOW_PROJ_DIR:-.}/plugins:/opt/airflow/plugins
     - /home/hyandri/airflow-docker/data:/opt/airflow/data
+    - ./logs/predictions:/opt/airflow/prediction_logs
   user: "${AIRFLOW_UID:-50000}:0"
   depends_on:
     &airflow-common-depends-on
@@ -146,22 +147,34 @@ services:
         --port 5000
         --backend-store-uri sqlite:///mlflow.db
         --allowed-hosts "*"
-     
- 
+
   mariadb-columnstore:
     image: mariadb/columnstore:latest
     container_name: mcs1
-    hostname: mcs1                        # CRITICAL - must match PM1
+    hostname: mcs1                       
     ports:
       - "3306:3306"
     environment:
       MARIADB_ROOT_PASSWORD: mlops@123.
-      PM1: mcs1                           # CRITICAL - tells ColumnStore its own node name
+      PM1: mcs1                           
     volumes:
       - mcs_data:/var/lib/mysql
-    shm_size: '512mb'                     # CRITICAL - ColumnStore needs shared memory
+    shm_size: '512mb'                     
 
-
+  fastapi:
+    build:
+      context: .
+      dockerfile: Dockerfile.fastapi
+    container_name: fastapi_app
+    ports:
+      - "8000:8000"
+    environment:
+      MLFLOW_TRACKING_URI: http://mlflow_server:5000
+    depends_on:
+      - mlflow
+    restart: on-failure
+    volumes:
+      - ./logs/predictions:/app/logs
 
   airflow-scheduler:
     <<: *airflow-common
