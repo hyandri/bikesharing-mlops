@@ -1,204 +1,257 @@
-# Airflow Docker - MLOps Data Pipelines
+# Bike Sharing MLOps Pipeline
 
-A Docker-based Apache Airflow project for orchestrating ETL pipelines with machine learning workflows. Includes multiple data ingestion and processing DAGs using MariaDB ColumnStore, Redis, and data validation with Great Expectations.
+A complete end-to-end MLOps pipeline for bike sharing demand prediction, 
+built with Apache Airflow, MariaDB ColumnStore, MLflow, Redis, and FastAPI.
 
 ## 🚀 Quick Start
 
 ### Prerequisites
-- Docker & Docker Compose installed
-- Linux/Mac (or WSL on Windows)
+- Docker and Docker Compose installed
+- Linux/Ubuntu (or WSL on Windows)
 - At least 4GB available memory
 
-### Setup & Run
+### Setup and Run
 
-1. **Clone and navigate to the project:**
+1. **Clone the repository:**
    ```bash
    git clone https://github.com/hyandri/bikesharing-mlops.git
    cd airflow-docker
    ```
 
-2. **Start the Airflow services:**
+2. **Set Airflow UID:**
+   ```bash
+   echo "AIRFLOW_UID=$(id -u)" > .env
+   ```
+
+3. **Start all services:**
    ```bash
    bash start.sh
    ```
    This will:
-   - Start Docker containers for Airflow, MariaDB, Redis, and ColumnStore
-   - Initialize the database schema
-   - Create necessary database users
+   - Start all Docker containers
+   - Trigger the ColumnStore CMAPI to start internal services
+   - Create the star schema database and tables
+   - Create the database user with correct permissions
 
-3. **Access Airflow UI:**
-   - URL: `http://localhost:8080`
-   - Default credentials: `airflow` / `airflow`
+4. **Trigger the pipeline:**
+   - Access Airflow UI at `http://localhost:8080`
+   - Credentials: `airflow` / `airflow`
+   - Trigger `bike_sharing_full_pipeline` DAG manually
+
+5. **Restart FastAPI after first pipeline run:**
+   ```bash
+   docker compose restart fastapi
+   ```
+   FastAPI loads the model from MLflow on startup. 
+   It must be restarted after the first pipeline run 
+   registers the model. On subsequent starts this is 
+   not needed.
 
 ## 📁 Project Structure
 
 ```
 airflow-docker/
-├── dags/                          # Airflow DAG definitions
-│   ├── bike_sharing_pipeline.py   # Bike sharing data ETL
-│   ├── common/                    # Shared modules
-│   │   ├── db_connectors.py       # Database connection utilities
-│   │   ├── etl_transforms.py      # ETL transformation functions
-│   │   ├── gx_validator.py        # Great Expectations validators
-│   │   ├── preprocessing.py       # Data preprocessing functions
-│   ├── sql/                       # SQL scripts
-│   │   └── create_star_schema.sql # Database schema definitions
-├── config/
-│   └── airflow.cfg                # Airflow configuration
+├── dags/
+│   ├── bike_sharing_pipeline.py   # Main pipeline DAG
+│   └── common/
+│       ├── db_connectors.py       # SQLAlchemy engine and Redis connection
+│       ├── etl_transforms.py      # Star schema transformation and loading
+│       ├── gx_validator.py        # Great Expectations validation
+│       ├── preprocessing.py       # Feature engineering, Redis serialisation
+│       ├── training.py            # XGBoost training and MLflow logging
+│       └── monitoring.py          # Drift detection helpers
+├── app/
+│   ├── main.py                    # FastAPI application and endpoints
+│   ├── model.py                   # MLflow model loading
+│   └── schemas.py                 # Pydantic input/output schemas
+├── monitoring/
+│   ├── monitor.py                 # Standalone drift detection script
+│   └── reports/                   # Generated Evidently HTML reports
+├── tests/
+│   └── test_pipeline.py           # pytest test suite (21 tests)
+├── dags/sql/
+│   └── create_star_schema.sql     # ColumnStore star schema
 ├── data/
-│   └── hour.csv                   # Sample bike sharing dataset
-├── docker-compose.yaml            # Docker Compose configuration
-├── Dockerfile                     # Custom Airflow image with dependencies
-├── start.sh                        # Startup script
-└── logs/                          # Airflow execution logs 
+│   └── hour.csv                   # UCI Bike Sharing dataset
+├── logs/
+│   └── predictions/
+│       └── predictions.jsonl      # FastAPI prediction logs
+├── Dockerfile                     # Airflow custom image
+├── Dockerfile.fastapi             # FastAPI image
+├── docker-compose.yml             # All services definition
+└── start.sh                       # Full startup script
 ```
 
 ## 🛠️ Tech Stack
 
-- **Orchestration:** Apache Airflow 2.11.0
-- **Database:** MariaDB with ColumnStore for analytics
-- **Cache:** Redis
-- **Data Validation:** Great Expectations 0.18.14
-- **Data Processing:** Pandas, PyArrow
-- **Analytics:** ClickHouse (via clickhouse-connect)
-- **Notebooks:** Jupyter for exploration
+| Component | Technology |
+|---|---|
+| Orchestration | Apache Airflow 2.11.0 (CeleryExecutor) |
+| OLAP Database | MariaDB ColumnStore |
+| Experiment Tracking | MLflow |
+| Inter-task Storage | Redis + PyArrow |
+| Data Validation | Great Expectations 0.18.14 |
+| Model | XGBoost |
+| Model Serving | FastAPI + Uvicorn |
+| Monitoring | Evidently 0.4.16 |
+| Testing | pytest |
 
-## 📊 Main DAGs
+## 📊 Pipeline DAG
 
-### 1. **Bike Sharing Pipeline** (`bike_sharing_pipeline.py`)
-- Ingests bike sharing hourly data
-- Transforms to star schema
-- Data validation with Great Expectations
-- Loads to MariaDB
+`bike_sharing_full_pipeline` consists of 8 sequential tasks:
 
-## 🔧 Configuration
-
-### Environment Variables (`.env`)
-The `.env` file contains:
-- `AIRFLOW_UID`: User ID for Airflow containers (default: 1000)
-
-### Airflow Configuration (`config/airflow.cfg`)
-Customize Airflow settings like:
-- Executor type
-- Database connections
-- DAG defaults
-- Email notifications
-
-### Database Schema
-Run SQL scripts in `dags/sql/` to initialize database:
-```bash
-docker exec -i <container_name> mariadb < dags/sql/create_star_schema.sql
+```
+validate_source
+    >> extract_and_transform
+    >> load_to_olap
+    >> extract
+    >> engineer_and_split
+    >> verify_redis_splits
+    >> train_xgboost
+    >> register_model
 ```
 
-## 📝 Common Commands
+| Task | Description |
+|---|---|
+| `validate_source` | Great Expectations validation on source CSV |
+| `extract_and_transform` | Transform CSV to star schema in memory |
+| `load_to_olap` | Load star schema into ColumnStore |
+| `extract` | Extract from ColumnStore, store in Redis |
+| `engineer_and_split` | Feature engineering + 80/20 temporal split |
+| `verify_redis_splits` | Confirm all splits stored correctly in Redis |
+| `train_xgboost` | Train XGBoost, log metrics to MLflow |
+| `register_model` | Register best model in MLflow model registry |
 
-### Airflow CLI
+## 🌐 Service Ports
+
+| Service | Port | URL |
+|---|---|---|
+| Airflow | 8080 | http://localhost:8080 |
+| MLflow | 5000 | http://localhost:5000 |
+| FastAPI | 8000 | http://localhost:8000 |
+| MariaDB ColumnStore | 3306 | localhost:3306 |
+| Redis | 6379 | Internal only |
+
+## 🤖 Model Performance
+
+XGBoost model evaluated on temporally held-out test set 
+(August–December 2012):
+
+| Metric | Value |
+|---|---|
+| R² | 0.9139 |
+| RMSE | 64.64 |
+| MAE | 41.49 |
+
+## 🌐 API Usage
+
+**Health check:**
 ```bash
-# Trigger a DAG
-docker exec <container_name> airflow dags trigger <dag_id>
-
-# List all DAGs
-docker exec <container_name> airflow dags list
-
-# View task logs
-docker exec <container_name> airflow tasks logs <dag_id> <task_id> <execution_date>
+curl http://localhost:8000/health
 ```
 
-### Docker
+**Predict:**
 ```bash
-# Stop all services
-docker compose down
-
-# View logs
-docker compose logs -f <service_name>
-
-# Rebuild images
-docker compose build --no-cache
+curl -X POST http://localhost:8000/predict \
+  -H "Content-Type: application/json" \
+  -d '{
+    "yr": 1, "mnth": 6, "hr": 8,
+    "weekday": 2, "holiday": 0, "workingday": 1,
+    "weathersit_original": 1, "season_original": 2,
+    "temp": 0.6, "atemp": 0.58, "hum": 0.4, "windspeed": 0.1,
+    "is_morning_rush": 1, "is_evening_rush": 0,
+    "is_weekend": 0, "is_peak_season": 1,
+    "temp_hum_interaction": 0.36, "temp_wind_interaction": 0.54
+  }'
 ```
 
-## 🧪 Development
+Swagger UI available at `http://localhost:8000/docs`
 
-### Adding New DAGs
-1. Create a Python file in `dags/`
-2. Define your DAG using Airflow operators
-3. The DAG will auto-discover within 5 minutes (configurable)
+## 📈 Model Monitoring
 
-### Using Shared Modules
-```python
-import sys
-import os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'common'))
+Monitoring runs as a standalone script — not a DAG component:
 
-from db_connectors import get_engine
-from etl_transforms import transform_to_star_schema
+```bash
+cd monitoring
+python monitor.py
 ```
 
-### Running Locally with Jupyter
+Generates 6 Evidently HTML reports in `monitoring/reports/`:
+- Data drift reports for control, temp_drift, hr_drift batches
+- Regression performance reports for each batch
+
+## 🧪 Testing
+
+21 pytest tests covering data ingestion, API prediction, 
+and model performance:
+
 ```bash
-jupyter notebook dags/Untitled.ipynb
+python -m pytest tests/test_pipeline.py -v -s
 ```
 
-## 📊 Monitoring & Logs
+## 🔧 Common Commands
 
-- **Airflow UI:** http://localhost:8080 (DAG status, execution history, logs)
-- **Logs Directory:** `logs/` contains detailed task execution logs
-- **Docker Logs:** Use `docker compose logs <service>`
-
-## 🔒 Security Notes
-
-
-Before deploying to production:
-- Change default passwords in `.env`
-- Use secrets management (Vault, AWS Secrets Manager)
-- Enable SSL/TLS
-- Configure proper authentication
-- Use production-grade database
-- Set up monitoring and alerting
-
-## 🐛 Troubleshooting
-
-### MariaDB ColumnStore not starting
+**Restart ColumnStore after system reboot:**
 ```bash
-docker exec <container> curl -s -X PUT https://127.0.0.1:8640/cmapi/0.4.0/node/start \
+bash start.sh
+```
+
+**Manually trigger CMAPI if ColumnStore is read-only:**
+```bash
+docker exec mcs1 curl -s -X PUT https://127.0.0.1:8640/cmapi/0.4.0/node/start \
   --header 'Content-Type:application/json' \
   --header 'x-api-key:somekey123' \
   --data '{"timeout":60}' -k
 ```
 
-### Airflow can't connect to database
-- Check `.env` file for `AIRFLOW_UID`
-- Verify Docker containers are running: `docker compose ps`
-- Check logs: `docker compose logs airflow-webserver`
-
-### Permissions issues
+**Check all containers:**
 ```bash
-# Fix volume permissions
-chmod -R 777 logs/
+docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
 ```
 
-## 📚 Resources
+**Stop everything:**
+```bash
+docker compose down
+```
 
-- [Apache Airflow Documentation](https://airflow.apache.org/docs/)
-- [Airflow Best Practices](https://airflow.apache.org/docs/apache-airflow/stable/best-practices.html)
-- [Great Expectations Documentation](https://docs.greatexpectations.io/)
-- [MariaDB ColumnStore](https://mariadb.com/docs/analytics/columnstore/)
+**Stop and wipe all data:**
+```bash
+docker compose down -v
+```
 
-## 📄 License
+## 🐛 Troubleshooting
 
-This project uses Apache Airflow, which is licensed under the Apache License 2.0. See LICENSE file for details.
+**DBRM read-only error when creating tables:**
+ColumnStore processes did not start. Run the CMAPI trigger above 
+and wait 20 seconds before retrying.
+
+**FastAPI returns model not found:**
+The pipeline DAG has not been run yet or MLflow was restarted. 
+Trigger the full pipeline DAG and then restart FastAPI:
+```bash
+docker compose restart fastapi
+```
+
+**Redis keys expired (preprocessing tests skipped):**
+Redis keys have a 24-hour TTL. Re-trigger the pipeline DAG 
+to restore them.
+
+**Airflow cannot find module:**
+Package missing from Dockerfile. Add it and rebuild:
+```bash
+docker compose build
+docker compose up -d
+```
+
+## 📄 Dataset
+
+UCI Bike Sharing Dataset — hourly rental records from 2011-2012.
+Place `hour.csv` in the `data/` folder before running the pipeline.
 
 ## 👤 Author
 
-[Your Name/Organization]
+hyandri
 
-## 🤝 Contributing
+## 📄 License
 
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit changes (`git commit -m 'Add amazing feature'`)
-4. Push to branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
-
----
-
-**Last Updated:** May 2026
+Apache License 2.0
